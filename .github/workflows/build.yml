@@ -549,4 +549,3 @@ jobs:
         run: |
           cp tvhome/app/build/outputs/apk/release/app-release.apk tvhome.apk
           gh release create "v${{ github.run_number }}" tvhome.apk --title "TV Home v${{ github.run_number }}" --notes "APK лаунчера для Android TV"
-
