@@ -1,0 +1,391 @@
+name: Build TV launcher
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Create project files
+        run: |
+          mkdir -p tvhome/app/src/main/java/com/my/tvhome
+          cd tvhome
+
+          cat > settings.gradle <<'EOF_A'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "TvHome"
+          include ':app'
+          EOF_A
+
+          cat > build.gradle <<'EOF_B'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_B
+
+          cat > app/build.gradle <<'EOF_C'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.my.tvhome'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.my.tvhome'
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF_C
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF_D'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <uses-feature android:name="android.software.leanback" android:required="false" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+              <application
+                  android:label="TV Home"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:screenOrientation="landscape">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_D
+
+          cat > app/src/main/java/com/my/tvhome/MainActivity.java <<'EOF_E'
+          package com.my.tvhome;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.content.pm.ResolveInfo;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.Drawable;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.text.TextUtils;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextClock;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.HashSet;
+          import java.util.LinkedHashMap;
+          import java.util.List;
+          import java.util.Map;
+          import java.util.Set;
+
+          public class MainActivity extends Activity {
+
+              // ===== НАСТРОЙКА ДОКА (4 главных приложения) =====
+              // {название, ключевые слова в названии через запятую, пакеты через запятую}
+              // Сначала ищется по пакету, потом по названию.
+              static final String[][] DOCK = {
+                  {"Happ", "happ", "com.happproxy"},
+                  {"YouTube", "youtube,smarttube",
+                      "com.teamsmart.videomanager.tv,com.liskovsoft.smarttubetv.beta,com.google.android.youtube.tv,com.google.android.youtube"},
+                  {"Кинопоиск", "кинопоиск,kinopoisk", "ru.kinopoisk.tv,ru.kinopoisk"},
+                  {"Play Market", "маркет,play store", "com.android.vending"},
+                  {"AirPlay", "airplay", "io.github.jqssun.airplay"},
+              };
+              static final int COLUMNS = 7;
+
+              static class App {
+                  String label;
+                  String pkg;
+                  Drawable icon;
+                  Intent intent;
+              }
+
+              private LinearLayout dock;
+              private LinearLayout grid;
+              private ScrollView scroll;
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  buildUi();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  refresh();
+              }
+
+              @Override
+              protected void onNewIntent(Intent i) {
+                  super.onNewIntent(i);
+                  scroll.scrollTo(0, 0);
+                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+              }
+
+              @Override
+              public void onBackPressed() {
+                  // На главном экране "Назад" ничего не делает
+              }
+
+              private int dp(int v) {
+                  return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+              }
+
+              private void buildUi() {
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.BLACK);
+                  root.setPadding(dp(56), dp(32), dp(56), dp(16));
+
+                  LinearLayout header = new LinearLayout(this);
+                  header.setGravity(Gravity.CENTER_VERTICAL);
+
+                  TextClock clock = new TextClock(this);
+                  clock.setFormat24Hour("HH:mm");
+                  clock.setFormat12Hour("HH:mm");
+                  clock.setTextColor(Color.WHITE);
+                  clock.setTextSize(44);
+                  clock.setTypeface(Typeface.create("sans-serif-thin", Typeface.NORMAL));
+                  header.addView(clock);
+
+                  TextClock date = new TextClock(this);
+                  date.setFormat24Hour("EEEE, d MMMM");
+                  date.setFormat12Hour("EEEE, d MMMM");
+                  date.setTextColor(0xFF9A9A9A);
+                  date.setTextSize(20);
+                  LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  dateLp.leftMargin = dp(24);
+                  header.addView(date, dateLp);
+                  root.addView(header);
+
+                  dock = new LinearLayout(this);
+                  dock.setGravity(Gravity.CENTER);
+                  dock.setPadding(dp(20), dp(16), dp(20), dp(16));
+                  GradientDrawable dockBg = new GradientDrawable();
+                  dockBg.setColor(0x22FFFFFF);
+                  dockBg.setCornerRadius(dp(28));
+                  dock.setBackground(dockBg);
+                  LinearLayout.LayoutParams dockLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  dockLp.gravity = Gravity.CENTER_HORIZONTAL;
+                  dockLp.topMargin = dp(24);
+                  dockLp.bottomMargin = dp(24);
+                  root.addView(dock, dockLp);
+
+                  scroll = new ScrollView(this);
+                  scroll.setVerticalScrollBarEnabled(false);
+                  grid = new LinearLayout(this);
+                  grid.setOrientation(LinearLayout.VERTICAL);
+                  grid.setGravity(Gravity.CENTER_HORIZONTAL);
+                  scroll.addView(grid, new ViewGroup.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  root.addView(scroll, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+                  setContentView(root);
+              }
+
+              private void refresh() {
+                  List<App> apps = loadApps();
+                  dock.removeAllViews();
+                  grid.removeAllViews();
+
+                  Set<String> docked = new HashSet<>();
+                  for (String[] d : DOCK) {
+                      App a = find(apps, d);
+                      if (a != null) {
+                          dock.addView(tile(a, 112));
+                          docked.add(a.pkg);
+                      }
+                  }
+
+                  List<App> rest = new ArrayList<>();
+                  for (App a : apps) {
+                      if (!docked.contains(a.pkg)) rest.add(a);
+                  }
+                  rest.add(settingsApp());
+
+                  LinearLayout row = null;
+                  for (int i = 0; i < rest.size(); i++) {
+                      if (i % COLUMNS == 0) {
+                          row = new LinearLayout(this);
+                          row.setOrientation(LinearLayout.HORIZONTAL);
+                          grid.addView(row);
+                      }
+                      row.addView(tile(rest.get(i), 72));
+                  }
+
+                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+              }
+
+              private App find(List<App> apps, String[] d) {
+                  for (String p : d[2].split(",")) {
+                      for (App a : apps) {
+                          if (a.pkg.equals(p.trim())) return a;
+                      }
+                  }
+                  for (String k : d[1].split(",")) {
+                      String key = k.trim().toLowerCase();
+                      for (App a : apps) {
+                          if (a.label.toLowerCase().contains(key) || a.pkg.toLowerCase().contains(key)) return a;
+                      }
+                  }
+                  return null;
+              }
+
+              private List<App> loadApps() {
+                  PackageManager pm = getPackageManager();
+                  Map<String, App> map = new LinkedHashMap<>();
+                  String[] cats = {Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER};
+                  for (String cat : cats) {
+                      Intent q = new Intent(Intent.ACTION_MAIN).addCategory(cat);
+                      for (ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
+                          String p = ri.activityInfo.packageName;
+                          if (p.equals(getPackageName()) || map.containsKey(p)) continue;
+                          App a = new App();
+                          a.pkg = p;
+                          a.label = String.valueOf(ri.loadLabel(pm));
+                          a.icon = ri.loadIcon(pm);
+                          a.intent = new Intent(Intent.ACTION_MAIN)
+                                  .addCategory(cat)
+                                  .setClassName(p, ri.activityInfo.name)
+                                  .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          map.put(p, a);
+                      }
+                  }
+                  List<App> list = new ArrayList<>(map.values());
+                  Collections.sort(list, (x, y) -> x.label.compareToIgnoreCase(y.label));
+                  return list;
+              }
+
+              private App settingsApp() {
+                  App a = new App();
+                  a.pkg = "settings";
+                  a.label = "Настройки";
+                  a.icon = getDrawable(android.R.drawable.ic_menu_preferences);
+                  a.intent = new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  return a;
+              }
+
+              private View tile(final App a, int iconDp) {
+                  LinearLayout t = new LinearLayout(this);
+                  t.setOrientation(LinearLayout.VERTICAL);
+                  t.setGravity(Gravity.CENTER_HORIZONTAL);
+                  t.setFocusable(true);
+                  t.setClickable(true);
+                  int p = dp(10);
+                  t.setPadding(p, p, p, p);
+
+                  ImageView iv = new ImageView(this);
+                  iv.setImageDrawable(a.icon);
+                  iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                  t.addView(iv, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
+
+                  TextView tv = new TextView(this);
+                  tv.setText(a.label);
+                  tv.setTextColor(Color.WHITE);
+                  tv.setTextSize(iconDp > 100 ? 16 : 13);
+                  tv.setSingleLine(true);
+                  tv.setEllipsize(TextUtils.TruncateAt.END);
+                  tv.setGravity(Gravity.CENTER);
+                  LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                          dp(iconDp + 36), ViewGroup.LayoutParams.WRAP_CONTENT);
+                  tlp.topMargin = dp(6);
+                  t.addView(tv, tlp);
+
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  lp.setMargins(dp(6), dp(6), dp(6), dp(6));
+                  t.setLayoutParams(lp);
+
+                  final GradientDrawable focusBg = new GradientDrawable();
+                  focusBg.setColor(0x44FFFFFF);
+                  focusBg.setCornerRadius(dp(18));
+                  t.setOnFocusChangeListener((v, focused) -> {
+                      float s = focused ? 1.12f : 1f;
+                      v.animate().scaleX(s).scaleY(s).setDuration(120).start();
+                      v.setBackground(focused ? focusBg : null);
+                  });
+
+                  t.setOnClickListener(v -> launch(a));
+                  return t;
+              }
+
+              private void launch(App a) {
+                  try {
+                      startActivity(a.intent);
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Не удалось открыть " + a.label, Toast.LENGTH_SHORT).show();
+                  }
+              }
+          }
+          EOF_E
+
+      - name: Build APK
+        working-directory: tvhome
+        run: gradle assembleDebug --no-daemon
+
+      - name: Publish APK as release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp tvhome/app/build/outputs/apk/debug/app-debug.apk tvhome.apk
+          gh release create "v${{ github.run_number }}" tvhome.apk --title "TV Home v${{ github.run_number }}" --notes "APK лаунчера для Android TV"
