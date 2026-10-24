@@ -23,6 +23,13 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Pillow
+        run: pip install pillow
+
       - name: Create project files
         run: |
           mkdir -p tvhome/app/src/main/java/com/my/tvhome
@@ -138,10 +145,10 @@ jobs:
           import android.graphics.drawable.GradientDrawable;
           import android.os.Bundle;
           import android.provider.Settings;
-          import android.text.TextUtils;
           import android.view.Gravity;
           import android.view.View;
           import android.view.ViewGroup;
+          import android.widget.FrameLayout;
           import android.widget.ImageView;
           import android.widget.LinearLayout;
           import android.widget.ScrollView;
@@ -159,29 +166,30 @@ jobs:
 
           public class MainActivity extends Activity {
 
-              // ===== НАСТРОЙКА ДОКА (4 главных приложения) =====
-              // {название, ключевые слова в названии через запятую, пакеты через запятую}
-              // Сначала ищется по пакету, потом по названию.
+              // ===== ИЗБРАННЫЕ ПРИЛОЖЕНИЯ (верхний ряд) =====
+              // {название, ключевые слова через запятую, пакеты через запятую}
               static final String[][] DOCK = {
-                  {"Happ", "happ", "com.happproxy"},
                   {"YouTube", "youtube,smarttube",
                       "com.teamsmart.videomanager.tv,com.liskovsoft.smarttubetv.beta,com.google.android.youtube.tv,com.google.android.youtube"},
                   {"Кинопоиск", "кинопоиск,kinopoisk", "ru.kinopoisk.tv,ru.kinopoisk"},
-                  {"Play Market", "маркет,play store", "com.android.vending"},
+                  {"Happ", "happ", "com.happproxy"},
                   {"AirPlay", "airplay", "io.github.jqssun.airplay"},
+                  {"Play Market", "маркет,play store", "com.android.vending"},
               };
-              static final int COLUMNS = 7;
 
               static class App {
                   String label;
                   String pkg;
                   Drawable icon;
                   Intent intent;
+                  boolean missing;
               }
 
-              private LinearLayout dock;
+              private LinearLayout favRow;
               private LinearLayout grid;
               private ScrollView scroll;
+              private TextView shelfTitle;
+              private TextView shelfSub;
 
               @Override
               protected void onCreate(Bundle b) {
@@ -199,7 +207,7 @@ jobs:
               protected void onNewIntent(Intent i) {
                   super.onNewIntent(i);
                   scroll.scrollTo(0, 0);
-                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+                  if (favRow.getChildCount() > 0) favRow.getChildAt(0).requestFocus();
               }
 
               @Override
@@ -212,91 +220,136 @@ jobs:
               }
 
               private void buildUi() {
-                  LinearLayout root = new LinearLayout(this);
-                  root.setOrientation(LinearLayout.VERTICAL);
+                  FrameLayout root = new FrameLayout(this);
                   root.setBackgroundColor(Color.BLACK);
-                  root.setPadding(dp(56), dp(32), dp(56), dp(16));
+
+                  ImageView wp = new ImageView(this);
+                  wp.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  try {
+                      wp.setImageResource(R.drawable.wallpaper);
+                  } catch (Throwable t) {
+                      // без обоев остаётся чёрный фон
+                  }
+                  root.addView(wp, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  View shade = new View(this);
+                  shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                          new int[]{0x55000000, 0x00000000, 0x99000000, 0xEE000000}));
+                  root.addView(shade, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  LinearLayout content = new LinearLayout(this);
+                  content.setOrientation(LinearLayout.VERTICAL);
+                  content.setPadding(dp(56), dp(28), dp(56), dp(12));
 
                   LinearLayout header = new LinearLayout(this);
-                  header.setGravity(Gravity.CENTER_VERTICAL);
-
+                  header.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+                  TextClock date = new TextClock(this);
+                  date.setFormat24Hour("EEEE, d MMMM");
+                  date.setFormat12Hour("EEEE, d MMMM");
+                  date.setTextColor(0xCCFFFFFF);
+                  date.setTextSize(18);
+                  header.addView(date);
                   TextClock clock = new TextClock(this);
                   clock.setFormat24Hour("HH:mm");
                   clock.setFormat12Hour("HH:mm");
                   clock.setTextColor(Color.WHITE);
-                  clock.setTextSize(44);
-                  clock.setTypeface(Typeface.create("sans-serif-thin", Typeface.NORMAL));
-                  header.addView(clock);
-
-                  TextClock date = new TextClock(this);
-                  date.setFormat24Hour("EEEE, d MMMM");
-                  date.setFormat12Hour("EEEE, d MMMM");
-                  date.setTextColor(0xFF9A9A9A);
-                  date.setTextSize(20);
-                  LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(
+                  clock.setTextSize(30);
+                  clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+                  LinearLayout.LayoutParams clockLp = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  dateLp.leftMargin = dp(24);
-                  header.addView(date, dateLp);
-                  root.addView(header);
+                  clockLp.leftMargin = dp(18);
+                  header.addView(clock, clockLp);
+                  content.addView(header);
 
-                  dock = new LinearLayout(this);
-                  dock.setGravity(Gravity.CENTER);
-                  dock.setPadding(dp(20), dp(16), dp(20), dp(16));
-                  GradientDrawable dockBg = new GradientDrawable();
-                  dockBg.setColor(0x22FFFFFF);
-                  dockBg.setCornerRadius(dp(28));
-                  dock.setBackground(dockBg);
-                  LinearLayout.LayoutParams dockLp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  dockLp.gravity = Gravity.CENTER_HORIZONTAL;
-                  dockLp.topMargin = dp(24);
-                  dockLp.bottomMargin = dp(24);
-                  root.addView(dock, dockLp);
+                  LinearLayout shelf = new LinearLayout(this);
+                  shelf.setOrientation(LinearLayout.VERTICAL);
+                  shelf.setGravity(Gravity.BOTTOM);
+                  shelfTitle = new TextView(this);
+                  shelfTitle.setTextColor(Color.WHITE);
+                  shelfTitle.setTextSize(48);
+                  shelfTitle.setSingleLine(true);
+                  shelfTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  shelfTitle.setShadowLayer(dp(10), 0, dp(2), 0x99000000);
+                  shelf.addView(shelfTitle);
+                  shelfSub = new TextView(this);
+                  shelfSub.setTextColor(0xCCFFFFFF);
+                  shelfSub.setTextSize(18);
+                  shelfSub.setShadowLayer(dp(6), 0, dp(1), 0x99000000);
+                  shelf.addView(shelfSub);
+                  content.addView(shelf, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
                   scroll = new ScrollView(this);
                   scroll.setVerticalScrollBarEnabled(false);
+                  scroll.setClipToPadding(false);
+                  scroll.setPadding(0, dp(14), 0, dp(14));
+                  LinearLayout rows = new LinearLayout(this);
+                  rows.setOrientation(LinearLayout.VERTICAL);
+                  favRow = new LinearLayout(this);
+                  favRow.setOrientation(LinearLayout.HORIZONTAL);
+                  rows.addView(favRow);
                   grid = new LinearLayout(this);
                   grid.setOrientation(LinearLayout.VERTICAL);
-                  grid.setGravity(Gravity.CENTER_HORIZONTAL);
-                  scroll.addView(grid, new ViewGroup.LayoutParams(
+                  LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  gridLp.topMargin = dp(18);
+                  rows.addView(grid, gridLp);
+                  scroll.addView(rows, new ViewGroup.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                  root.addView(scroll, new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  content.addView(scroll, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(330)));
 
+                  root.addView(content, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                   setContentView(root);
+              }
+
+              private void setShelf(App a) {
+                  shelfTitle.setText(a.label);
+                  shelfSub.setText(a.missing
+                          ? "Не установлено. Загрузи APK через apps.sber.ru/my"
+                          : "Нажми OK, чтобы открыть");
               }
 
               private void refresh() {
                   List<App> apps = loadApps();
-                  dock.removeAllViews();
+                  favRow.removeAllViews();
                   grid.removeAllViews();
 
-                  Set<String> docked = new HashSet<>();
+                  Set<String> used = new HashSet<>();
                   for (String[] d : DOCK) {
                       App a = find(apps, d);
-                      if (a != null) {
-                          dock.addView(tile(a, 112));
-                          docked.add(a.pkg);
+                      if (a == null) {
+                          a = new App();
+                          a.label = d[0];
+                          a.pkg = "missing:" + d[0];
+                          a.missing = true;
+                      } else {
+                          used.add(a.pkg);
                       }
+                      favRow.addView(tile(a, 132, 22));
                   }
 
                   List<App> rest = new ArrayList<>();
                   for (App a : apps) {
-                      if (!docked.contains(a.pkg)) rest.add(a);
+                      if (!used.contains(a.pkg)) rest.add(a);
                   }
                   rest.add(settingsApp());
 
+                  int cols = Math.max(4, (getResources().getDisplayMetrics().widthPixels - dp(112)) / dp(104));
                   LinearLayout row = null;
                   for (int i = 0; i < rest.size(); i++) {
-                      if (i % COLUMNS == 0) {
+                      if (i % cols == 0) {
                           row = new LinearLayout(this);
                           row.setOrientation(LinearLayout.HORIZONTAL);
                           grid.addView(row);
                       }
-                      row.addView(tile(rest.get(i), 72));
+                      row.addView(tile(rest.get(i), 84, 14));
                   }
 
-                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+                  if (favRow.getChildCount() > 0) favRow.getChildAt(0).requestFocus();
               }
 
               private App find(List<App> apps, String[] d) {
@@ -348,51 +401,61 @@ jobs:
                   return a;
               }
 
-              private View tile(final App a, int iconDp) {
-                  LinearLayout t = new LinearLayout(this);
-                  t.setOrientation(LinearLayout.VERTICAL);
-                  t.setGravity(Gravity.CENTER_HORIZONTAL);
+              private GradientDrawable rounded(int color, int stroke, float radius) {
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(color);
+                  g.setCornerRadius(radius);
+                  if (stroke != 0) g.setStroke(dp(3), stroke);
+                  return g;
+              }
+
+              private View tile(final App a, int sizeDp, int padDp) {
+                  FrameLayout t = new FrameLayout(this);
                   t.setFocusable(true);
                   t.setClickable(true);
-                  int p = dp(10);
-                  t.setPadding(p, p, p, p);
+                  float r = dp(sizeDp) * 0.22f;
+                  final GradientDrawable normal = rounded(0x40FFFFFF, 0, r);
+                  final GradientDrawable focused = rounded(0x80FFFFFF, Color.WHITE, r);
+                  t.setBackground(normal);
+                  t.setAlpha(a.missing ? 0.5f : 1f);
 
-                  ImageView iv = new ImageView(this);
-                  iv.setImageDrawable(a.icon);
-                  iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                  t.addView(iv, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
+                  if (a.icon != null) {
+                      ImageView iv = new ImageView(this);
+                      iv.setImageDrawable(a.icon);
+                      iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                      iv.setPadding(dp(padDp), dp(padDp), dp(padDp), dp(padDp));
+                      t.addView(iv, new FrameLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  } else {
+                      TextView letter = new TextView(this);
+                      letter.setText(a.label.isEmpty() ? "?" : a.label.substring(0, 1).toUpperCase());
+                      letter.setTextColor(Color.WHITE);
+                      letter.setTextSize(40);
+                      letter.setGravity(Gravity.CENTER);
+                      t.addView(letter, new FrameLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  }
 
-                  TextView tv = new TextView(this);
-                  tv.setText(a.label);
-                  tv.setTextColor(Color.WHITE);
-                  tv.setTextSize(iconDp > 100 ? 16 : 13);
-                  tv.setSingleLine(true);
-                  tv.setEllipsize(TextUtils.TruncateAt.END);
-                  tv.setGravity(Gravity.CENTER);
-                  LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
-                          dp(iconDp + 36), ViewGroup.LayoutParams.WRAP_CONTENT);
-                  tlp.topMargin = dp(6);
-                  t.addView(tv, tlp);
-
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  lp.setMargins(dp(6), dp(6), dp(6), dp(6));
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp));
+                  lp.setMargins(dp(10), dp(10), dp(10), dp(10));
                   t.setLayoutParams(lp);
 
-                  final GradientDrawable focusBg = new GradientDrawable();
-                  focusBg.setColor(0x44FFFFFF);
-                  focusBg.setCornerRadius(dp(18));
-                  t.setOnFocusChangeListener((v, focused) -> {
-                      float s = focused ? 1.12f : 1f;
-                      v.animate().scaleX(s).scaleY(s).setDuration(120).start();
-                      v.setBackground(focused ? focusBg : null);
+                  t.setOnFocusChangeListener((v, f) -> {
+                      float s = f ? 1.14f : 1f;
+                      v.animate().scaleX(s).scaleY(s).setDuration(140).start();
+                      v.setBackground(f ? focused : normal);
+                      if (f) setShelf(a);
                   });
-
                   t.setOnClickListener(v -> launch(a));
                   return t;
               }
 
               private void launch(App a) {
+                  if (a.missing || a.intent == null) {
+                      Toast.makeText(this, a.label + " не установлено. Загрузи APK через apps.sber.ru/my",
+                              Toast.LENGTH_LONG).show();
+                      return;
+                  }
                   try {
                       startActivity(a.intent);
                   } catch (Exception e) {
@@ -541,6 +604,105 @@ jobs:
           ZwUAAiAAAuBfGvBvEGcFAAIgAAIgAEIAIAACIABCACAAAiAAQgAgAAIgAEJYxv8AzS3F33pxBIcA
           AAAASUVORK5CYII=
           EOF_N
+
+          cat > wall.py <<'EOF_W'
+          import os, random, math
+          from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+          W, H = 1280, 720
+          OUT = 'app/src/main/res/drawable-nodpi/wallpaper.jpg'
+          USER = '../wallpaper.jpg'
+
+          def scene():
+              S = 2
+              w, h = W * S, H * S
+              random.seed(7)
+              sky = Image.new('RGB', (w, h))
+              d = ImageDraw.Draw(sky)
+              stops = [(0.0, (10, 12, 46)), (0.45, (58, 38, 112)), (0.75, (214, 98, 140)), (1.0, (255, 176, 130))]
+              for y in range(h):
+                  t = y / h
+                  for i in range(len(stops) - 1):
+                      a, ca = stops[i]; b, cb = stops[i + 1]
+                      if a <= t <= b:
+                          k = (t - a) / (b - a)
+                          d.line([(0, y), (w, y)], fill=tuple(int(ca[j] + (cb[j] - ca[j]) * k) for j in range(3)))
+                          break
+              im = sky.convert('RGBA')
+              # stars
+              st = Image.new('RGBA', (w, h), (0, 0, 0, 0)); sd = ImageDraw.Draw(st)
+              for _ in range(350):
+                  x = random.randint(0, w); y = random.randint(0, int(h * 0.55))
+                  r = random.choice([1, 1, 2, 3]); a = int(255 * (1 - y / (h * 0.6)))
+                  sd.ellipse([x - r, y - r, x + r, y + r], fill=(255, 255, 255, max(60, a)))
+              im = Image.alpha_composite(im, st.filter(ImageFilter.GaussianBlur(0.8)))
+              # moon + glow
+              mx, my, mr = int(w * 0.72), int(h * 0.26), int(h * 0.11)
+              glow = Image.new('RGBA', (w, h), (0, 0, 0, 0)); gd = ImageDraw.Draw(glow)
+              gd.ellipse([mx - mr * 3, my - mr * 3, mx + mr * 3, my + mr * 3], fill=(255, 220, 240, 70))
+              im = Image.alpha_composite(im, glow.filter(ImageFilter.GaussianBlur(mr)))
+              md = ImageDraw.Draw(im)
+              md.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(255, 246, 232, 255))
+              # clouds
+              cl = Image.new('RGBA', (w, h), (0, 0, 0, 0)); cd = ImageDraw.Draw(cl)
+              for _ in range(26):
+                  cx = random.randint(-100, w + 100); cy = random.randint(int(h * 0.45), int(h * 0.78))
+                  rw = random.randint(180, 480); rh = random.randint(26, 70)
+                  cd.ellipse([cx - rw, cy - rh, cx + rw, cy + rh], fill=(255, 190, 210, 70))
+              im = Image.alpha_composite(im, cl.filter(ImageFilter.GaussianBlur(28)))
+              # mountains
+              def ridge(base, amp, col, seed):
+                  random.seed(seed)
+                  pts = [(0, h)]
+                  ph = [random.random() * 6 for _ in range(3)]
+                  for x in range(0, w + 20, 20):
+                      y = base + amp * (math.sin(x / 260 + ph[0]) * 0.6 + math.sin(x / 110 + ph[1]) * 0.3 + math.sin(x / 47 + ph[2]) * 0.1)
+                      pts.append((x, y))
+                  pts.append((w, h))
+                  l = Image.new('RGBA', (w, h), (0, 0, 0, 0)); ImageDraw.Draw(l).polygon(pts, fill=col)
+                  return l.filter(ImageFilter.GaussianBlur(1.5))
+              im = Image.alpha_composite(im, ridge(h * 0.70, h * 0.07, (92, 56, 128, 255), 3))
+              im = Image.alpha_composite(im, ridge(h * 0.78, h * 0.06, (52, 34, 96, 255), 5))
+              # city skyline with lit windows
+              cy = Image.new('RGBA', (w, h), (0, 0, 0, 0)); cd = ImageDraw.Draw(cy)
+              x = 0
+              while x < w:
+                  bw = random.randint(40, 110); bh = random.randint(int(h * 0.10), int(h * 0.30))
+                  top = h - bh
+                  cd.rectangle([x, top, x + bw, h], fill=(16, 14, 38, 255))
+                  for wy in range(top + 14, h - 10, 22):
+                      for wx in range(x + 8, x + bw - 8, 16):
+                          if random.random() < 0.35:
+                              cd.rectangle([wx, wy, wx + 6, wy + 9], fill=random.choice([(255, 214, 120, 255), (255, 232, 170, 255), (255, 170, 130, 255)]))
+                  x += bw + random.randint(0, 14)
+              im = Image.alpha_composite(im, cy)
+              # sakura petals
+              pt = Image.new('RGBA', (w, h), (0, 0, 0, 0)); pd = ImageDraw.Draw(pt)
+              for _ in range(140):
+                  x = random.randint(0, w); y = random.randint(0, h)
+                  r = random.randint(4, 12)
+                  pd.ellipse([x - r, y - r // 2, x + r, y + r // 2], fill=(255, 205, 222, random.randint(110, 230)))
+              im = Image.alpha_composite(im, pt.filter(ImageFilter.GaussianBlur(1.2)))
+              # blossom branch top-left
+              br = Image.new('RGBA', (w, h), (0, 0, 0, 0)); bd = ImageDraw.Draw(br)
+              bd.line([(0, int(h * 0.12)), (int(w * 0.14), int(h * 0.06)), (int(w * 0.30), int(h * 0.09))], fill=(40, 24, 50, 255), width=14)
+              for _ in range(90):
+                  t = random.random(); bx = int(w * 0.30 * t); by = int(h * (0.12 - 0.05 * math.sin(t * 3.0))) + random.randint(-70, 70)
+                  r = random.randint(10, 26)
+                  bd.ellipse([bx - r, by - r, bx + r, by + r], fill=(255, random.randint(170, 205), random.randint(200, 225), 235))
+              im = Image.alpha_composite(im, br.filter(ImageFilter.GaussianBlur(2)))
+              return im.convert('RGB').resize((W, H), Image.LANCZOS)
+
+          os.makedirs(os.path.dirname(OUT), exist_ok=True)
+          if os.path.exists(USER):
+              img = ImageOps.fit(Image.open(USER).convert('RGB'), (W, H), Image.LANCZOS)
+          else:
+              img = scene()
+          img.save(OUT, quality=82, optimize=True)
+          print('wallpaper ok', os.path.getsize(OUT))
+          EOF_W
+
+          python3 wall.py
 
 
       - name: Build APK
